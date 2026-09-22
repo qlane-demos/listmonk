@@ -1,0 +1,53 @@
+# ---- build: compile THIS commit's binary (testing-only, for PR sandboxes) ----
+# Upstream's Dockerfile copies a prebuilt `listmonk` binary from the build
+# context and compiles nothing. That matters more than usual here: `make dist`
+# packs queries.sql, schema.sql, the public templates and the Vue admin INTO the
+# binary with stuffbin, so an image not built from this commit would run the old
+# SQL and the old UI no matter what the pull request changed.
+#
+# Debian rather than Alpine: the Makefile derives its version with `grep -oP`,
+# which busybox grep does not support. Node comes from this base (Vite 5 and the
+# email builder), Go is copied from the matching golang image at the version
+# go.mod pins.
+FROM node:20-bookworm AS build
+
+COPY --from=golang:1.24-bookworm /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH \
+    CGO_ENABLED=0
+
+RUN corepack enable
+
+WORKDIR /src
+COPY . .
+
+# stuffbin + go build + both frontend builds + pack, exactly as `make dist` does
+# for a release.
+RUN make dist
+
+# ---- runtime: unchanged from upstream apart from where the binary comes from ----
+FROM alpine:latest
+
+# Install dependencies
+RUN apk --no-cache add ca-certificates tzdata shadow su-exec
+
+# Set the working directory
+WORKDIR /listmonk
+
+# Copy only the necessary files
+COPY --from=build /src/listmonk .
+COPY config.toml.sample config.toml
+
+# Copy the entrypoint script
+COPY docker-entrypoint.sh /usr/local/bin/
+
+# Make the entrypoint script executable
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Expose the application port
+EXPOSE 9000
+
+# Set the entrypoint
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+# Define the command to run the application
+CMD ["./listmonk"]

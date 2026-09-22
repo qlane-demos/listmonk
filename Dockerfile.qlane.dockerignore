@@ -1,0 +1,13 @@
+# Dockerfile-specific ignore file: BuildKit uses this INSTEAD of .dockerignore
+# when building Dockerfile.qlane, and leaves upstream's file untouched.
+#
+# Upstream's .dockerignore is written for a Dockerfile that copies a prebuilt
+# binary, so it can afford to strip anything. It excludes **/.gitignore, which a
+# from-source build cannot survive: the frontend build uses frontend/.gitignore
+# as its eslint ignore path and fails with ENOENT without it.
+**/node_modules
+.git
+frontend/dist
+frontend/email-builder/dist
+frontend/public/static/email-builder
+listmonk

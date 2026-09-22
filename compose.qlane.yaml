@@ -1,0 +1,73 @@
+# Testing-only compose file for PR sandboxes. Not used in production.
+#
+# Written standalone rather than as an include: overlay of docker-compose.yml,
+# because that file pins `image: listmonk/listmonk:latest` -- the released build
+# -- and also carries container_name / hostname / a host bind mount that only
+# make sense for a self-hosted install. Nothing here is inherited from it.
+#
+# Dockerfile.qlane is upstream's Dockerfile with one added stage that compiles
+# this commit (see the comment there for why that matters for listmonk).
+services:
+  app:
+    # Unregistrable tag: a container reporting this image can only have been
+    # built here, never pulled.
+    image: listmonk-pr:test
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile.qlane
+    ports:
+      - "9000:9000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Same boot sequence as upstream's compose: idempotent install on an empty
+    # database, then migrations, then serve. --config '' makes listmonk read
+    # only the environment below.
+    command: [sh, -c, "./listmonk --install --idempotent --yes --config '' && ./listmonk --upgrade --yes --config '' && ./listmonk --config ''"]
+    environment:
+      # All interfaces, not loopback -- a loopback bind is unreachable from
+      # outside the container.
+      LISTMONK_app__address: 0.0.0.0:9000
+      LISTMONK_db__user: listmonk
+      LISTMONK_db__password: listmonk
+      LISTMONK_db__database: listmonk
+      LISTMONK_db__host: db
+      LISTMONK_db__port: 5432
+      LISTMONK_db__ssl_mode: disable
+      TZ: Etc/UTC
+      # Creates the Super Admin on first boot, so there is no setup screen.
+      # Throwaway credentials for an ephemeral sandbox that holds no real data.
+      LISTMONK_ADMIN_USER: admin
+      LISTMONK_ADMIN_PASSWORD: qlane-demo-2026
+    healthcheck:
+      # 127.0.0.1, not localhost: busybox resolves localhost to ::1 first and
+      # does not fall back, while listmonk listens on IPv4 only. /health is the
+      # public, unauthenticated health route.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      # The install + upgrade steps run before the server listens.
+      start_period: 30s
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: listmonk
+      POSTGRES_PASSWORD: listmonk
+      POSTGRES_DB: listmonk
+    # No named volume: the sandbox is discarded after every run.
+    volumes:
+      - ./qlane-seed.sql:/qlane/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U listmonk -d listmonk"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    labels:
+      # Seeds a realistic newsletter (lists, subscribers, some of whom have
+      # unsubscribed) once the stack is healthy. On db rather than app: this
+      # image has psql and a shell, and the hook runs inside its own container.
+      # Idempotent by construction -- see qlane-seed.sql.
+      ai.qlane.postdeploy: "psql -U listmonk -d listmonk -f /qlane/seed.sql"
